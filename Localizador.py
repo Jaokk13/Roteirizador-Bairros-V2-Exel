@@ -1611,43 +1611,18 @@ class LocalizadorApp(QMainWindow):
                 icon=folium.DivIcon(html=icon_html, icon_size=(30,30), icon_anchor=(15,15))
             ).add_to(mapa)
 
-        # Desenha Linhas da Rota (OSRM)
-        # Nota: Fazemos chamadas síncronas aqui. Se a rota for muito longa, pode travar levemente a UI.
-        # Para produção pesada, ideal seria mover para thread, mas para uso desktop simples é aceitável.
+        # Desenha Linhas da Rota (Linhas retas sólidas - OSRM não confiável para esta região)
         cores_rota = ['red', 'blue', 'green', 'purple', 'orange', 'darkred', 'cadetblue', 'darkgreen', 'darkblue', 'black']
-        
-        # Otimização: Session para reutilizar conexão TCP e evitar overhead de handshake a cada segmento
-        session = requests.Session()
-        session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
         
         for i in range(len(rota) - 1):
             p1 = [rota[i]['lat'], rota[i]['lon']]
             p2 = [rota[i+1]['lat'], rota[i+1]['lon']]
             cor_atual = cores_rota[i % len(cores_rota)]
             
-            sucesso_osrm = False
-            try:
-                # Tenta OSRM
-                coords_str = f"{p1[1]},{p1[0]};{p2[1]},{p2[0]}"
-                # URL do servidor de demonstração do OSRM. Usar HTTPS é mais seguro.
-                url_routing = f"https://router.project-osrm.org/route/v1/driving/{coords_str}?overview=full&geometries=geojson"
-                
-                # Usa session com timeout um pouco maior para mais robustez
-                resp = session.get(url_routing, timeout=5.0)
-                resp.raise_for_status() # Lança um erro para códigos HTTP 4xx/5xx
-                
-                data = resp.json()
-                if "routes" in data and len(data["routes"]) > 0:
-                    geometry = data["routes"][0]["geometry"]["coordinates"]
-                    route_points = [[lat, lon] for lon, lat in geometry]
-                    folium.PolyLine(route_points, color=cor_atual, weight=5, opacity=0.7).add_to(mapa)
-                    sucesso_osrm = True
-            except Exception as e:
-                print(f"Falha ao obter rota do OSRM para o trecho {i+1}: {e}")
-            
-            # Fallback: Linha reta se OSRM falhar
-            if not sucesso_osrm:
-                folium.PolyLine([p1, p2], color=cor_atual, weight=2.5, opacity=0.5, dash_array='5, 5').add_to(mapa)
+            folium.PolyLine([p1, p2], color=cor_atual, weight=4, opacity=0.9).add_to(mapa)
+
+        # Ajusta o zoom para mostrar toda a rota
+        mapa.fit_bounds([[min_lat, min_lon], [max_lat, max_lon]])
 
         data = io.BytesIO()
         mapa.save(data, close_file=False)
