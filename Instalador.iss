@@ -1,10 +1,10 @@
-; Script de Instalação Profissional - Roteirizador Carcereri
-; ----------------------------------------------------------
+; Script de Instalação Profissional - Roteirizador BrPaving
+; ---------------------------------------------------------
 
-#define MyAppName "Roteirizador Carcereri"
+#define MyAppName "Roteirizador BrPaving"
 #define MyAppVersion "3.0"
-#define MyAppPublisher "Carcereri Engenharia"
-#define MyAppExeName "RoteirizadorCarcereri.exe"
+#define MyAppPublisher "BrPaving Engenharia"
+#define MyAppExeName "RoteirizadorBrPaving.exe"
 
 [Setup]
 ; ID único do App. Mantenha este mesmo ID para futuras atualizações.

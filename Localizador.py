@@ -48,7 +48,7 @@ else:
 
 # --- CONFIGURAÇÃO DE DIRETÓRIOS (APPDATA) ---
 # Para funcionar em "Arquivos de Programas", os dados devem ficar em AppData
-APP_NAME = "RoteirizadorCarcereri"
+APP_NAME = "RoteirizadorBrPaving"
 DATA_DIR = os.path.join(os.getenv('APPDATA'), APP_NAME)
 
 if not os.path.exists(DATA_DIR):
@@ -871,7 +871,7 @@ class RouteWorker(QThread):
 class LocalizadorApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Roteirizador Manutenção - Carcereri")
+        self.setWindowTitle("Roteirizador Manutenção - BrPaving")
         self.resize(1200, 900)
         load_config() # Carrega configurações globais
         self.load_settings()
@@ -980,61 +980,63 @@ class LocalizadorApp(QMainWindow):
         header_layout = QHBoxLayout(header_widget)
         header_layout.setContentsMargins(0, 0, 0, 5)
         
-        # Título de Boas Vindas
-        lbl_titulo = QLabel("Pra onde vamos hoje?")
-        lbl_titulo.setStyleSheet("font-size: 18px; font-weight: bold; color: #004aad; border: none; background: transparent;")
-        header_layout.addWidget(lbl_titulo)
+        # Título de Boas Vindas (Removido a pedido do usuário para mais espaço)
         
         header_layout.addStretch()
         
         # Botão Importar DB (Icone)
         self.btn_import_db = QPushButton()
         self.btn_import_db.setIcon(qta.icon('fa5s.file-import', color='#f0ad4e'))
-        self.btn_import_db.setFixedSize(30, 30)
+        self.btn_import_db.setFixedSize(40, 40)
         self.btn_import_db.setCursor(Qt.PointingHandCursor)
         self.btn_import_db.setToolTip("Importar Banco de Dados")
-        self.btn_import_db.setStyleSheet("QPushButton { border: none; background: transparent; border-radius: 15px; } QPushButton:hover { background-color: #e0e0e0; }")
+        self.btn_import_db.setStyleSheet("QPushButton { border: none; background: transparent; border-radius: 20px; } QPushButton:hover { background-color: #e0e0e0; }")
         self.btn_import_db.clicked.connect(self.importar_banco)
         header_layout.addWidget(self.btn_import_db)
+        header_layout.addStretch()
 
         # Botão Exportar DB (Icone)
         self.btn_export_db = QPushButton()
         self.btn_export_db.setIcon(qta.icon('fa5s.file-export', color='#17a2b8'))
-        self.btn_export_db.setFixedSize(30, 30)
+        self.btn_export_db.setFixedSize(40, 40)
         self.btn_export_db.setCursor(Qt.PointingHandCursor)
         self.btn_export_db.setToolTip("Exportar Banco de Dados")
-        self.btn_export_db.setStyleSheet("QPushButton { border: none; background: transparent; border-radius: 15px; } QPushButton:hover { background-color: #e0e0e0; }")
+        self.btn_export_db.setStyleSheet("QPushButton { border: none; background: transparent; border-radius: 20px; } QPushButton:hover { background-color: #e0e0e0; }")
         self.btn_export_db.clicked.connect(self.exportar_banco)
         header_layout.addWidget(self.btn_export_db)
+        header_layout.addStretch()
         
         # Botão Configurações (Icone)
         self.btn_config = QPushButton()
         self.btn_config.setIcon(qta.icon('fa5s.cog', color='#6c757d'))
-        self.btn_config.setFixedSize(30, 30)
+        self.btn_config.setFixedSize(40, 40)
         self.btn_config.setCursor(Qt.PointingHandCursor)
         self.btn_config.setToolTip("Configurações (Cidade/Base)")
-        self.btn_config.setStyleSheet("QPushButton { border: none; background: transparent; border-radius: 15px; } QPushButton:hover { background-color: #e0e0e0; }")
+        self.btn_config.setStyleSheet("QPushButton { border: none; background: transparent; border-radius: 20px; } QPushButton:hover { background-color: #e0e0e0; }")
         self.btn_config.clicked.connect(self.abrir_config)
         header_layout.addWidget(self.btn_config)
+        header_layout.addStretch()
 
         self.btn_center = QPushButton()
         self.btn_center.setIcon(qta.icon('fa5s.crosshairs', color='#004aad'))
-        self.btn_center.setFixedSize(30, 30)
+        self.btn_center.setFixedSize(40, 40)
         self.btn_center.setCursor(Qt.PointingHandCursor)
         self.btn_center.setToolTip("Centralizar Rota")
-        self.btn_center.setStyleSheet("QPushButton { border: none; background: transparent; border-radius: 15px; } QPushButton:hover { background-color: #e0e0e0; }")
+        self.btn_center.setStyleSheet("QPushButton { border: none; background: transparent; border-radius: 20px; } QPushButton:hover { background-color: #e0e0e0; }")
         self.btn_center.clicked.connect(self.expandir_mapa)
         self.btn_center.setEnabled(False)
         header_layout.addWidget(self.btn_center)
+        header_layout.addStretch()
 
         self.btn_toggle = QPushButton()
         self.btn_toggle.setIcon(qta.icon('fa5s.chevron-up', color='#004aad'))
-        self.btn_toggle.setFixedSize(30, 30)
+        self.btn_toggle.setFixedSize(40, 40)
         self.btn_toggle.setCursor(Qt.PointingHandCursor)
         self.btn_toggle.setToolTip("Minimizar/Expandir")
-        self.btn_toggle.setStyleSheet("QPushButton { border: none; background: transparent; border-radius: 15px; } QPushButton:hover { background-color: #e0e0e0; }")
+        self.btn_toggle.setStyleSheet("QPushButton { border: none; background: transparent; border-radius: 20px; } QPushButton:hover { background-color: #e0e0e0; }")
         self.btn_toggle.clicked.connect(self.toggle_hud)
         header_layout.addWidget(self.btn_toggle)
+        header_layout.addStretch()
         
         main_hud_layout.addWidget(header_widget)
         
