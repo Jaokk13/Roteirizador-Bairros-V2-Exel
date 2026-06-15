@@ -1873,7 +1873,7 @@ class LocalizadorApp(QMainWindow):
             if not fname: return
             
             # Lê o arquivo (dtype=str para manter zeros à esquerda em OS/CEP)
-            self.df_dados = pd.read_excel(fname, dtype=str)
+            self.df_dados = pd.read_excel(fname, dtype=str, engine='openpyxl')
             # Normaliza colunas (remove espaços e deixa minúsculo para busca)
             self.df_dados.columns = [str(c).strip() for c in self.df_dados.columns]
             

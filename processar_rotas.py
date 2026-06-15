@@ -94,7 +94,7 @@ def processar():
             return
 
     try:
-        df = pd.read_excel(ARQUIVO_EXCEL)
+        df = pd.read_excel(ARQUIVO_EXCEL, engine='openpyxl')
     except Exception as e:
         print(f"❌ Erro ao ler Excel: {e}")
         return
