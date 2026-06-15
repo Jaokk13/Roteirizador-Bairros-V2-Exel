@@ -27,7 +27,7 @@ from geopy.extra.rate_limiter import RateLimiter
 
 # Imports da Interface Gráfica (PyQt5)
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                             QHBoxLayout, QTextEdit, QPushButton, QLabel, QProgressBar, QMessageBox, QLineEdit, QFileDialog, QComboBox, QDialog, QFormLayout, QListWidget, QListWidgetItem, QAbstractItemView, QFrame, QToolTip)
+                             QHBoxLayout, QTextEdit, QPushButton, QLabel, QProgressBar, QMessageBox, QLineEdit, QFileDialog, QComboBox, QDialog, QFormLayout, QListWidget, QListWidgetItem, QAbstractItemView, QFrame, QToolTip, QSpinBox, QInputDialog)
 from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEnginePage
 from PyQt5.QtCore import QThread, pyqtSignal, Qt
 from PyQt5.QtGui import QIcon
@@ -327,6 +327,135 @@ def organizar_rota_tsp(dados_locais):
                     
     return rota_ordenada
 
+def dividir_em_equipes(dados_locais, num_equipes, base=None):
+    """
+    Divide serviços em N equipes usando K-Means geográfico balanceado.
+    dados_locais: Lista de dicionários {'lat': float, 'lon': float, 'nome': str, 'tipo': str}
+    num_equipes: Número de equipes desejado
+    base: Dicionário com dados da base (adicionado a cada equipe)
+    Retorna: Dict { "Equipe 1": [rota_otimizada], ... }
+    """
+    import random
+    
+    if not dados_locais or num_equipes <= 0:
+        return {}
+    
+    # Se há menos serviços que equipes, cada serviço vira uma equipe
+    if num_equipes >= len(dados_locais):
+        resultado = {}
+        for i, d in enumerate(dados_locais):
+            membros = [d]
+            if base:
+                membros = [base.copy()] + membros
+                p_ret = base.copy()
+                p_ret['nome'] += " (Retorno)"
+                membros.append(p_ret)
+            resultado[f"Equipe {i+1}"] = membros
+        return resultado
+    
+    rng = random.Random(42)
+    
+    # --- 1. K-Means: Inicialização ---
+    indices = rng.sample(range(len(dados_locais)), num_equipes)
+    centroids = [(dados_locais[i]['lat'], dados_locais[i]['lon']) for i in indices]
+    
+    assignments = [0] * len(dados_locais)
+    
+    # --- 2. K-Means: Iterações ---
+    for _ in range(50):
+        changed = False
+        for i, ponto in enumerate(dados_locais):
+            min_dist = float('inf')
+            best = 0
+            for j, c in enumerate(centroids):
+                dist = calcular_distancia((ponto['lat'], ponto['lon']), c)
+                if dist < min_dist:
+                    min_dist = dist
+                    best = j
+            if assignments[i] != best:
+                assignments[i] = best
+                changed = True
+        
+        if not changed:
+            break
+        
+        # Recalcula centróides
+        new_centroids = []
+        for j in range(num_equipes):
+            members = [dados_locais[i] for i in range(len(dados_locais)) if assignments[i] == j]
+            if members:
+                avg_lat = sum(m['lat'] for m in members) / len(members)
+                avg_lon = sum(m['lon'] for m in members) / len(members)
+                new_centroids.append((avg_lat, avg_lon))
+            else:
+                new_centroids.append(centroids[j])
+        centroids = new_centroids
+    
+    # --- 3. Balanceamento ---
+    total = len(dados_locais)
+    max_allowed = (total // num_equipes) + 1
+    
+    for _ in range(20):
+        sizes = [0] * num_equipes
+        for a in assignments:
+            sizes[a] += 1
+        
+        if all(s <= max_allowed for s in sizes):
+            break
+        
+        for j in range(num_equipes):
+            if sizes[j] > max_allowed:
+                members_dist = []
+                for i in range(len(dados_locais)):
+                    if assignments[i] == j:
+                        d = calcular_distancia((dados_locais[i]['lat'], dados_locais[i]['lon']), centroids[j])
+                        members_dist.append((d, i))
+                members_dist.sort(reverse=True)
+                
+                excess = sizes[j] - max_allowed
+                for _, idx in members_dist[:excess]:
+                    min_d = float('inf')
+                    best_k = -1
+                    for k in range(num_equipes):
+                        if k != j and sizes[k] < max_allowed:
+                            d = calcular_distancia(
+                                (dados_locais[idx]['lat'], dados_locais[idx]['lon']),
+                                centroids[k]
+                            )
+                            if d < min_d:
+                                min_d = d
+                                best_k = k
+                    if best_k >= 0:
+                        assignments[idx] = best_k
+                        sizes[j] -= 1
+                        sizes[best_k] += 1
+    
+    # --- 4. Monta resultado com TSP por equipe ---
+    resultado = {}
+    for j in range(num_equipes):
+        membros = [dados_locais[i] for i in range(len(dados_locais)) if assignments[i] == j]
+        if not membros:
+            continue
+        
+        # Adiciona base no início
+        if base:
+            membros_com_base = [base.copy()] + membros
+        else:
+            membros_com_base = membros
+        
+        # Otimiza rota interna da equipe
+        rota = organizar_rota_tsp(membros_com_base)
+        
+        # Fecha ciclo (retorno à base)
+        if rota and base:
+            p_ret = rota[0].copy()
+            p_ret['nome'] += " (Retorno)"
+            rota.append(p_ret)
+        
+        resultado[f"Equipe {j+1}"] = rota
+    
+    return resultado
+
 # --- CLASSES AUXILIARES DE UI ---
 
 class CustomWebEnginePage(QWebEnginePage):
@@ -544,12 +673,14 @@ class DatabaseUpdater(QThread):
 class RouteWorker(QThread):
     update_progress = pyqtSignal(str)
     finished = pyqtSignal(list, list) # Retorna (rota, nao_encontrados)
+    finished_equipes = pyqtSignal(dict, list) # Retorna (equipes_dict, nao_encontrados)
     error = pyqtSignal(str)
     
-    def __init__(self, base_address, lista_bairros):
+    def __init__(self, base_address, lista_bairros, num_equipes=0):
         super().__init__()
         self.base_address = base_address
         self.bairros_raw = lista_bairros
+        self.num_equipes = num_equipes  # 0 = rota normal, >1 = divisão por equipes
         self.cache_file = CACHE_FILE
         self.cache = self.load_cache()
         self.db_data = self.load_database()
@@ -849,18 +980,30 @@ class RouteWorker(QThread):
             if len(dados_coletados) < 2:
                 self.error.emit("Poucos endereços encontrados para traçar rota (Mínimo 2).")
                 return
+            
+            # --- MODO DIVISÃO POR EQUIPES ---
+            if self.num_equipes > 1:
+                self.update_progress.emit(f"Dividindo {len(dados_coletados)-1} serviços em {self.num_equipes} equipes...")
+                base_dados = dados_coletados[0]  # Primeiro item é sempre a base
+                servicos = dados_coletados[1:]   # Restante são os serviços
                 
-            self.update_progress.emit("Otimizando rota (TSP)...")
-            rota_final = organizar_rota_tsp(dados_coletados)
-            
-            # Fecha o ciclo (Retorno à base)
-            if rota_final:
-                p_retorno = rota_final[0].copy()
-                p_retorno['nome'] += " (Retorno)"
-                rota_final.append(p_retorno)
-            
-            # Emite a lista de dados para a UI processar e gerar o mapa
-            self.finished.emit(rota_final, nao_encontrados)
+                equipes = dividir_em_equipes(servicos, self.num_equipes, base_dados)
+                
+                self.update_progress.emit(f"Divisão concluída: {len(equipes)} equipes criadas.")
+                self.finished_equipes.emit(equipes, nao_encontrados)
+            else:
+                # --- MODO ROTA NORMAL ---
+                self.update_progress.emit("Otimizando rota (TSP)...")
+                rota_final = organizar_rota_tsp(dados_coletados)
+                
+                # Fecha o ciclo (Retorno à base)
+                if rota_final:
+                    p_retorno = rota_final[0].copy()
+                    p_retorno['nome'] += " (Retorno)"
+                    rota_final.append(p_retorno)
+                
+                # Emite a lista de dados para a UI processar e gerar o mapa
+                self.finished.emit(rota_final, nao_encontrados)
             
             if nao_encontrados:
                 self.update_progress.emit(f"Itens não encontrados: {', '.join(nao_encontrados)}")
@@ -881,6 +1024,8 @@ class LocalizadorApp(QMainWindow):
         self.nao_encontrados = [] # Armazena itens não encontrados
         self.map_worker = None  # Worker para regenerar mapa
         self.db_updater = None  # Worker de atualização
+        self.equipes_resultado = {}  # Dict de equipes divididas
+        self.equipe_selecionada = None  # Nome da equipe atualmente exibida
         
         # Configuração do Ícone (Basta colocar um arquivo 'icone.png' na mesma pasta)
         icon_path = os.path.join(SCRIPT_DIR, "icone.ico")
@@ -1065,32 +1210,53 @@ class LocalizadorApp(QMainWindow):
         self.btn_importar.clicked.connect(self.carregar_excel)
         hud_layout.addWidget(self.btn_importar)
 
-        # Filtro de Equipe
-        lbl_equipe = QLabel("<b>Filtrar por Equipe:</b>")
-        lbl_equipe.setStyleSheet("background: transparent; border: none; margin-top: 5px;")
-        hud_layout.addWidget(lbl_equipe)
+        # Número de Equipes
+        lbl_num_equipes = QLabel("<b>Número de Equipes (1-50):</b>")
+        lbl_num_equipes.setStyleSheet("background: transparent; border: none; margin-top: 5px;")
+        hud_layout.addWidget(lbl_num_equipes)
 
-        self.combo_equipe = QComboBox()
-        self.combo_equipe.setStyleSheet("background: white; border: 1px solid #ccc; border-radius: 4px; padding: 4px;")
-        self.combo_equipe.setEnabled(False)
-        self.combo_equipe.currentTextChanged.connect(self.filtrar_por_equipe)
-        hud_layout.addWidget(self.combo_equipe)
+        self.spin_num_equipes = QSpinBox()
+        self.spin_num_equipes.setMinimum(1)
+        self.spin_num_equipes.setMaximum(50)
+        self.spin_num_equipes.setValue(1)
+        self.spin_num_equipes.setStyleSheet("background: white; border: 1px solid #ccc; border-radius: 4px; padding: 4px;")
+        hud_layout.addWidget(self.spin_num_equipes)
 
-        lbl_dest = QLabel("<b>Destinos (separados por vírgula):</b>")
+        # Botão de Divisão
+        self.btn_dividir = QPushButton(" Dividir e Roteirizar")
+        self.btn_dividir.setIcon(qta.icon('fa5s.users', color='white'))
+        self.btn_dividir.setStyleSheet("background-color: #28a745; color: white; font-weight: bold; padding: 12px; font-size: 14px; border-radius: 8px; margin-top: 5px;")
+        self.btn_dividir.clicked.connect(self.iniciar_divisao)
+        self.btn_dividir.setEnabled(False) # Habilita ao carregar excel
+        hud_layout.addWidget(self.btn_dividir)
+
+        # Combo Resultado das Equipes
+        lbl_equipe_res = QLabel("<b>Visualizar Equipe:</b>")
+        lbl_equipe_res.setStyleSheet("background: transparent; border: none; margin-top: 5px;")
+        hud_layout.addWidget(lbl_equipe_res)
+
+        self.combo_resultado_equipes = QComboBox()
+        self.combo_resultado_equipes.addItem("Aguardando Divisão...")
+        self.combo_resultado_equipes.setStyleSheet("background: white; border: 1px solid #ccc; border-radius: 4px; padding: 4px;")
+        self.combo_resultado_equipes.setEnabled(False)
+        self.combo_resultado_equipes.currentTextChanged.connect(self.selecionar_equipe_resultado)
+        hud_layout.addWidget(self.combo_resultado_equipes)
+
+        lbl_dest = QLabel("<b>Destinos Livres (Opcional):</b>")
         lbl_dest.setStyleSheet("background: transparent; border: none; margin-top: 5px;")
         hud_layout.addWidget(lbl_dest)
         
         self.txt_input = QTextEdit()
         self.txt_input.setPlaceholderText("Ex: Jardim das Américas, Pedra 90...")
         self.txt_input.setMaximumHeight(60) # Entrada menor
-        self.txt_input.setText("Jardim das Américas, Pedra 90, Santa Rosa, CPA I, Goiabeiras")
         self.txt_input.setStyleSheet("background: white; border: 1px solid #ccc; border-radius: 4px;")
         hud_layout.addWidget(self.txt_input)
         
-        self.btn_gerar = QPushButton(" Gerar Rota Otimizada")
+        self.btn_gerar = QPushButton(" Roteirizar Apenas Livres")
         self.btn_gerar.setIcon(qta.icon('fa5s.route', color='white'))
         self.btn_gerar.setStyleSheet("background-color: #004aad; color: white; font-weight: bold; padding: 12px; font-size: 14px; border-radius: 8px;")
         self.btn_gerar.clicked.connect(self.iniciar_processamento)
+        self.btn_gerar.setEnabled(False)
         hud_layout.addWidget(self.btn_gerar)
         
         # Botão Limpar Cache
@@ -1273,8 +1439,6 @@ class LocalizadorApp(QMainWindow):
         else:
             self.hud_body.show()
             self.btn_toggle.setIcon(qta.icon('fa5s.chevron-up', color='#004aad'))
-        self.hud_widget.adjustSize()
-        
     def resizeEvent(self, event):
         # Mantém o widget da lista ancorado à direita
         if hasattr(self, 'lista_widget'):
@@ -1284,7 +1448,78 @@ class LocalizadorApp(QMainWindow):
         self.loading_overlay.move((self.width() - 200) // 2, (self.height() - 100) // 2)
         super().resizeEvent(event)
 
+    def iniciar_divisao(self):
+        """Inicia o processo de divisão de serviços por equipes."""
+        if not hasattr(self, 'df_dados') or self.df_dados is None:
+            QMessageBox.warning(self, "Aviso", "Por favor, carregue uma planilha Excel primeiro.")
+            return
+            
+        base = self.txt_base.text()
+        if not base.strip():
+            QMessageBox.warning(self, "Aviso", "Por favor, defina a Base de Saída.")
+            return
+            
+        APP_CONFIG['base_address'] = base
+        save_config()
+        
+        num_equipes = self.spin_num_equipes.value()
+        
+        # Pega todos os bairros listados na caixa de texto (que carregou do excel)
+        texto = self.txt_input.toPlainText()
+        lista_bairros = texto.split(',') if texto.strip() else []
+        
+        if not lista_bairros:
+            QMessageBox.warning(self, "Aviso", "Nenhum endereço encontrado para roteirizar.")
+            return
+            
+        self.set_interface_busy(True)
+        self.progress_bar.setRange(0, 0) # Modo indeterminado
+        self.progress_bar.show()
+        self.txt_log.clear()
+        self.txt_log.append(f"Iniciando divisão em {num_equipes} equipes...")
+        
+        self.worker = RouteWorker(base, lista_bairros, num_equipes=num_equipes)
+        self.worker.update_progress.connect(self.atualizar_status)
+        self.worker.finished_equipes.connect(self.receber_dados_divisao)
+        self.worker.error.connect(self.exibir_erro)
+        self.worker.start()
+
+    def receber_dados_divisao(self, equipes_dict, nao_encontrados):
+        """Recebe o dicionário de equipes roteirizadas e atualiza a UI."""
+        self.equipes_resultado = equipes_dict
+        self.nao_encontrados = nao_encontrados
+        
+        self.combo_resultado_equipes.blockSignals(True)
+        self.combo_resultado_equipes.clear()
+        
+        if equipes_dict:
+            for nome_equipe in sorted(equipes_dict.keys()):
+                self.combo_resultado_equipes.addItem(nome_equipe)
+                
+            self.combo_resultado_equipes.setEnabled(True)
+            self.equipe_selecionada = self.combo_resultado_equipes.currentText()
+            self.rota_atual = self.equipes_resultado[self.equipe_selecionada]
+            self.txt_log.append(f"<b>Divisão concluída! Visualizando {self.equipe_selecionada}.</b>")
+            self.atualizar_interface_rota()
+        else:
+            self.combo_resultado_equipes.addItem("Nenhuma rota gerada.")
+            self.combo_resultado_equipes.setEnabled(False)
+            self.set_interface_busy(False)
+            
+        self.combo_resultado_equipes.blockSignals(False)
+        self.progress_bar.hide()
+        self.lista_widget.show()
+
+    def selecionar_equipe_resultado(self, equipe_nome):
+        """Troca a visualização da rota para a equipe selecionada no combo."""
+        if equipe_nome in self.equipes_resultado:
+            self.equipe_selecionada = equipe_nome
+            self.rota_atual = self.equipes_resultado[equipe_nome]
+            self.txt_log.append(f"Visualizando {equipe_nome}...")
+            self.atualizar_interface_rota()
+
     def iniciar_processamento(self):
+        """Modo normal sem divisão de equipes."""
         texto = self.txt_input.toPlainText()
         base = self.txt_base.text()
         if not texto.strip():
@@ -1294,24 +1529,26 @@ class LocalizadorApp(QMainWindow):
             QMessageBox.warning(self, "Aviso", "Por favor, defina a Base de Saída.")
             return
             
-        # Salva a base atual nas configurações
+        # Limpa dados de divisão se existir
+        self.equipes_resultado.clear()
+        self.combo_resultado_equipes.blockSignals(True)
+        self.combo_resultado_equipes.clear()
+        self.combo_resultado_equipes.addItem("Aguardando Divisão...")
+        self.combo_resultado_equipes.setEnabled(False)
+        self.combo_resultado_equipes.blockSignals(False)
+            
         APP_CONFIG['base_address'] = base
         save_config()
             
         lista_bairros = texto.split(',')
         
-        self.btn_gerar.setEnabled(False)
-        self.btn_copy.setEnabled(False)
-        self.btn_center.setEnabled(False)
-        self.btn_invert.setEnabled(False)
-        self.lista_widget.hide()
+        self.set_interface_busy(True)
         self.progress_bar.setRange(0, 0) # Modo indeterminado
         self.progress_bar.show()
-        self.mostrar_loading(True)
         self.txt_log.clear()
-        self.txt_log.append("Iniciando processamento...")
+        self.txt_log.append("Iniciando processamento de rota única...")
         
-        self.worker = RouteWorker(base, lista_bairros)
+        self.worker = RouteWorker(base, lista_bairros, num_equipes=0)
         self.worker.update_progress.connect(self.atualizar_status)
         self.worker.finished.connect(self.receber_dados_rota)
         self.worker.error.connect(self.exibir_erro)
@@ -1366,11 +1603,15 @@ class LocalizadorApp(QMainWindow):
         self.mostrar_loading(busy)
         enable = not busy
         self.btn_gerar.setEnabled(enable)
+        if hasattr(self, 'btn_dividir'):
+            self.btn_dividir.setEnabled(enable and hasattr(self, 'df_dados') and self.df_dados is not None)
         self.btn_invert.setEnabled(enable)
         self.btn_copy.setEnabled(enable)
         self.btn_copy_list.setEnabled(enable)
         self.btn_export.setEnabled(enable)
         self.btn_center.setEnabled(enable)
+        if hasattr(self, 'combo_resultado_equipes'):
+            self.combo_resultado_equipes.setEnabled(enable and len(self.equipes_resultado) > 0)
         if busy:
             self.lbl_loading.setText("Gerando Trajeto...\nAguarde")
 
@@ -1389,6 +1630,11 @@ class LocalizadorApp(QMainWindow):
             # Fatia: [Base] + [Reverso do meio] + [Base]
             meio = self.rota_atual[1:-1]
             self.rota_atual = [self.rota_atual[0]] + meio[::-1] + [self.rota_atual[-1]]
+            
+            # Se faz parte de uma divisão de equipes, salva no dict
+            if self.equipe_selecionada and self.equipe_selecionada in self.equipes_resultado:
+                self.equipes_resultado[self.equipe_selecionada] = self.rota_atual
+                
             self.atualizar_interface_rota()
             self.txt_log.append("Rota invertida.")
 
@@ -1724,58 +1970,60 @@ class LocalizadorApp(QMainWindow):
             QMessageBox.critical(self, "Erro", f"Erro ao importar: {e}")
 
     def exportar_excel(self):
-        """Exporta a rota atual para um arquivo Excel ordenado."""
-        if not self.rota_atual:
-            QMessageBox.warning(self, "Aviso", "Gere uma rota primeiro.")
+        """Exporta a rota atual para um arquivo Excel ordenado, incluindo equipes."""
+        if not hasattr(self, 'df_dados') or self.df_dados is None or not self.col_endereco_atual:
+            QMessageBox.warning(self, "Aviso", "Planilha base não encontrada ou coluna de endereço ausente.")
             return
 
-        fname, _ = QFileDialog.getSaveFileName(self, "Salvar Excel Ordenado", "Rota_Ordenada.xlsx", "Excel Files (*.xlsx)")
+        if not self.equipes_resultado and not self.rota_atual:
+            QMessageBox.warning(self, "Aviso", "Gere ou divida uma rota primeiro.")
+            return
+
+        fname, _ = QFileDialog.getSaveFileName(self, "Salvar Excel Ordenado", "Rota_Equipes.xlsx", "Excel Files (*.xlsx)")
         if not fname: return
 
         try:
-            # Caso 1: Temos dados do Excel carregados e uma coluna de endereço identificada
-            if hasattr(self, 'df_dados') and hasattr(self, 'col_endereco_atual') and self.col_endereco_atual:
-                # Filtra apenas a equipe atual se houver filtro
-                equipe = self.combo_equipe.currentText()
-                if equipe and equipe != "Selecione...":
-                    df_export = self.df_dados[self.df_dados[self.col_equipe] == equipe].copy()
-                else:
-                    df_export = self.df_dados.copy()
-
-                # Garante que a coluna Execução existe (insere na posição 0)
-                col_exec = "Execução"
-                if col_exec not in df_export.columns:
-                    df_export.insert(0, col_exec, "")
-                
-                # Cria um mapa de {endereço_limpo: ordem}
-                mapa_ordem = {}
-                for i, ponto in enumerate(self.rota_atual):
-                    # Limpa o nome (remove Zona e Retorno para bater com o Excel original)
-                    nome_limpo = re.sub(r" \(Zona \w+\)$", "", ponto['nome'])
-                    nome_limpo = nome_limpo.replace(" (Retorno)", "")
-                    mapa_ordem[nome_limpo.lower().strip()] = i + 1
-                
-                # Função para aplicar a ordem
-                def get_ordem(end):
-                    end_clean = str(end).strip().lower()
-                    return mapa_ordem.get(end_clean, 9999) # 9999 para não encontrados ficarem no fim
-
-                # Aplica a ordem na coluna Execução
-                df_export[col_exec] = df_export[self.col_endereco_atual].apply(get_ordem)
-                
-                # Ordena as linhas pelo número da execução
-                df_export = df_export.sort_values(by=col_exec)
-                
-                # Salva
-                df_export.to_excel(fname, index=False)
+            df_export = self.df_dados.copy()
             
-            # Caso 2: Apenas lista manual (sem Excel base)
-            else:
-                data = [{"Ordem": i + 1, "Endereço": p['nome']} for i, p in enumerate(self.rota_atual)]
-                df_export = pd.DataFrame(data)
-                df_export.to_excel(fname, index=False)
+            # Garante colunas de Controle
+            col_exec = "Ordem de Execução"
+            col_eq = "Equipe Designada"
+            if col_exec not in df_export.columns:
+                df_export.insert(0, col_exec, "")
+            if col_eq not in df_export.columns:
+                df_export.insert(0, col_eq, "")
 
-            QMessageBox.information(self, "Sucesso", f"Arquivo salvo e ordenado!\n{fname}")
+            # Mapa global de {endereco_limpo: (equipe, ordem)}
+            mapa_end = {}
+            
+            if self.equipes_resultado:
+                # Múltiplas equipes
+                for equipe_nome, rota in self.equipes_resultado.items():
+                    for i, ponto in enumerate(rota):
+                        end_clean = re.sub(r" \(Zona \w+\)$", "", ponto['nome']).replace(" (Retorno)", "").lower().strip()
+                        mapa_end[end_clean] = (equipe_nome, i + 1)
+            else:
+                # Apenas rota simples
+                for i, ponto in enumerate(self.rota_atual):
+                    end_clean = re.sub(r" \(Zona \w+\)$", "", ponto['nome']).replace(" (Retorno)", "").lower().strip()
+                    mapa_end[end_clean] = ("Rota Única", i + 1)
+
+            def get_equipe(end):
+                end_clean = str(end).strip().lower()
+                return mapa_end.get(end_clean, ("", 9999))[0]
+                
+            def get_ordem(end):
+                end_clean = str(end).strip().lower()
+                return mapa_end.get(end_clean, ("", 9999))[1]
+
+            df_export[col_eq] = df_export[self.col_endereco_atual].apply(get_equipe)
+            df_export[col_exec] = df_export[self.col_endereco_atual].apply(get_ordem)
+            
+            # Ordena por equipe e depois por ordem
+            df_export = df_export.sort_values(by=[col_eq, col_exec])
+            
+            df_export.to_excel(fname, index=False)
+            QMessageBox.information(self, "Sucesso", f"Arquivo salvo com sucesso!\n{fname}")
 
         except Exception as e:
             QMessageBox.critical(self, "Erro", f"Erro ao exportar Excel: {e}")
@@ -1877,41 +2125,24 @@ class LocalizadorApp(QMainWindow):
             # Normaliza colunas (remove espaços e deixa minúsculo para busca)
             self.df_dados.columns = [str(c).strip() for c in self.df_dados.columns]
             
-            # Busca coluna de Equipe (procura por 'equipe' no nome da coluna)
+            # Busca coluna de Bairro ou Endereço
             cols = self.df_dados.columns
-            self.col_equipe = next((c for c in cols if 'equipe' in c.lower()), None)
-            
-            if self.col_equipe:
-                equipes = sorted(self.df_dados[self.col_equipe].dropna().unique())
-                self.combo_equipe.clear()
-                self.combo_equipe.addItem("Selecione...")
-                self.combo_equipe.addItems(equipes)
-                self.combo_equipe.setEnabled(True)
-                self.txt_log.append(f"Excel carregado! {len(equipes)} equipes encontradas.")
+            col_alvo = next((c for c in cols if 'bairro' in c.lower()), None)
+            if not col_alvo:
+                col_alvo = next((c for c in cols if 'endereço' in c.lower() or 'endereco' in c.lower()), None)
+                
+            if col_alvo:
+                self.col_endereco_atual = col_alvo
+                # Remove duplicatas e vazios
+                locais = sorted(list(set([str(x).strip() for x in self.df_dados[col_alvo].dropna().tolist() if str(x).strip()])))
+                self.txt_input.setText(", ".join(locais))
+                self.txt_log.append(f"Excel carregado! {len(locais)} serviços/bairros encontrados.")
+                self.btn_dividir.setEnabled(True)
+                self.btn_gerar.setEnabled(True)
             else:
-                QMessageBox.warning(self, "Aviso", "Coluna 'Equipe' não encontrada no arquivo.")
+                QMessageBox.warning(self, "Aviso", "Coluna de Bairro/Endereço não encontrada no arquivo.")
         except Exception as e:
             QMessageBox.critical(self, "Erro", f"Erro ao ler Excel: {e}")
-
-    def filtrar_por_equipe(self, texto):
-        if not texto or texto == "Selecione..." or not hasattr(self, 'df_dados'): return
-        
-        df_filt = self.df_dados[self.df_dados[self.col_equipe] == texto]
-        
-        # Busca coluna de Bairro ou Endereço
-        cols = df_filt.columns
-        col_alvo = next((c for c in cols if 'bairro' in c.lower()), None)
-        if not col_alvo:
-            col_alvo = next((c for c in cols if 'endereço' in c.lower() or 'endereco' in c.lower()), None)
-            
-        if col_alvo:
-            self.col_endereco_atual = col_alvo # Salva a coluna usada para usar na exportação
-            # Remove duplicatas e vazios
-            locais = sorted(list(set([str(x).strip() for x in df_filt[col_alvo].dropna().tolist() if str(x).strip()])))
-            self.txt_input.setText(", ".join(locais))
-            self.txt_log.append(f"{len(locais)} locais da equipe {texto} carregados.")
-        else:
-            self.txt_log.append("Coluna de Bairro/Endereço não encontrada.")
 
     def closeEvent(self, event):
         self.save_settings()
