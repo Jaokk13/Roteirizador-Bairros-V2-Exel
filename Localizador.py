@@ -11,6 +11,7 @@ import requests
 import time
 import re
 import pandas as pd
+import openpyxl
 
 # Tenta importar qtawesome, usa fallback se não existir (evita erro ao abrir)
 try:
