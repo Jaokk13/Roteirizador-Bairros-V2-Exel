@@ -83,18 +83,28 @@ def save_config():
 
 # --- FUNÇÕES AUXILIARES (Lógica Pura) ---
 
-# Função para identificar a zona da cidade baseada nas coordenadas
 def identificar_zona(lat, lon):
+    import math
     # Centro dinâmico baseado na configuração
     center = APP_CONFIG.get('center', [-15.5989, -56.0949])
     diff_lat = lat - center[0]
     diff_lon = lon - center[1]
     
-    # Define a zona pela maior diferença (Latitude ou Longitude)
-    if abs(diff_lat) > abs(diff_lon):
-        return "Zona Norte" if diff_lat > 0 else "Zona Sul"
-    else:
-        return "Zona Leste" if diff_lon > 0 else "Zona Oeste"
+    # math.atan2(y, x) onde y=diff_lon e x=diff_lat. Converte para graus.
+    angle = math.degrees(math.atan2(diff_lon, diff_lat))
+    if angle < 0: 
+        angle += 360
+        
+    # Divide os 360 graus em 8 fatias de 45 graus, centradas nos eixos cardeais
+    # Norte: 337.5 a 22.5
+    if angle >= 337.5 or angle < 22.5: return "Zona Norte"
+    if angle >= 22.5 and angle < 67.5: return "Zona Nordeste"
+    if angle >= 67.5 and angle < 112.5: return "Zona Leste"
+    if angle >= 112.5 and angle < 157.5: return "Zona Sudeste"
+    if angle >= 157.5 and angle < 202.5: return "Zona Sul"
+    if angle >= 202.5 and angle < 247.5: return "Zona Sudoeste"
+    if angle >= 247.5 and angle < 292.5: return "Zona Oeste"
+    if angle >= 292.5 and angle < 337.5: return "Zona Noroeste"
 
 def calcular_distancia(coord1, coord2):
     # Fórmula de Haversine para distância em linha reta (aproximada)
@@ -329,13 +339,10 @@ def organizar_rota_tsp(dados_locais):
 
 def dividir_em_equipes(dados_locais, num_equipes, base=None):
     """
-    Divide serviços em N equipes usando K-Means geográfico balanceado.
-    dados_locais: Lista de dicionários {'lat': float, 'lon': float, 'nome': str, 'tipo': str}
-    num_equipes: Número de equipes desejado
-    base: Dicionário com dados da base (adicionado a cada equipe)
-    Retorna: Dict { "Equipe 1": [rota_otimizada], ... }
+    Divide serviços em N equipes usando Algoritmo Sweep (Varredura Angular).
+    Garante regiões que não se cruzam (fatias de pizza) e divisão exata de serviços.
     """
-    import random
+    import math
     
     if not dados_locais or num_equipes <= 0:
         return {}
@@ -353,107 +360,58 @@ def dividir_em_equipes(dados_locais, num_equipes, base=None):
             resultado[f"Equipe {i+1}"] = membros
         return resultado
     
-    rng = random.Random(42)
-    
-    # --- 1. K-Means: Inicialização ---
-    indices = rng.sample(range(len(dados_locais)), num_equipes)
-    centroids = [(dados_locais[i]['lat'], dados_locais[i]['lon']) for i in indices]
-    
-    assignments = [0] * len(dados_locais)
-    
-    # --- 2. K-Means: Iterações ---
-    for _ in range(50):
-        changed = False
-        for i, ponto in enumerate(dados_locais):
-            min_dist = float('inf')
-            best = 0
-            for j, c in enumerate(centroids):
-                dist = calcular_distancia((ponto['lat'], ponto['lon']), c)
-                if dist < min_dist:
-                    min_dist = dist
-                    best = j
-            if assignments[i] != best:
-                assignments[i] = best
-                changed = True
+    # --- 1. Algoritmo Sweep (Varredura Angular por Região) ---
+    # Define o centro de referência ESTRITAMENTE pelo centro da cidade configurado
+    # Isso garante que as "fatias" cruzem a cidade do centro para as bordas de forma uniforme.
+    center = APP_CONFIG.get('center', [-15.5989, -56.0949])
+    center_lat = center[0]
+    center_lon = center[1]
         
-        if not changed:
-            break
+    # Calcula o ângulo de cada ponto em relação ao centro da cidade
+    dados_com_angulo = []
+    for d in dados_locais:
+        # math.atan2(y, x) onde y é a longitude e x a latitude
+        angulo = math.atan2(d['lon'] - center_lon, d['lat'] - center_lat)
+        dados_com_angulo.append((angulo, d))
         
-        # Recalcula centróides
-        new_centroids = []
-        for j in range(num_equipes):
-            members = [dados_locais[i] for i in range(len(dados_locais)) if assignments[i] == j]
-            if members:
-                avg_lat = sum(m['lat'] for m in members) / len(members)
-                avg_lon = sum(m['lon'] for m in members) / len(members)
-                new_centroids.append((avg_lat, avg_lon))
-            else:
-                new_centroids.append(centroids[j])
-        centroids = new_centroids
+    # Ordena pelos ângulos (cria as "fatias" da região)
+    dados_com_angulo.sort(key=lambda x: x[0])
+    dados_ordenados = [item[1] for item in dados_com_angulo]
     
-    # --- 3. Balanceamento ---
-    total = len(dados_locais)
-    max_allowed = (total // num_equipes) + 1
-    
-    for _ in range(20):
-        sizes = [0] * num_equipes
-        for a in assignments:
-            sizes[a] += 1
-        
-        if all(s <= max_allowed for s in sizes):
-            break
-        
-        for j in range(num_equipes):
-            if sizes[j] > max_allowed:
-                members_dist = []
-                for i in range(len(dados_locais)):
-                    if assignments[i] == j:
-                        d = calcular_distancia((dados_locais[i]['lat'], dados_locais[i]['lon']), centroids[j])
-                        members_dist.append((d, i))
-                members_dist.sort(reverse=True)
-                
-                excess = sizes[j] - max_allowed
-                for _, idx in members_dist[:excess]:
-                    min_d = float('inf')
-                    best_k = -1
-                    for k in range(num_equipes):
-                        if k != j and sizes[k] < max_allowed:
-                            d = calcular_distancia(
-                                (dados_locais[idx]['lat'], dados_locais[idx]['lon']),
-                                centroids[k]
-                            )
-                            if d < min_d:
-                                min_d = d
-                                best_k = k
-                    if best_k >= 0:
-                        assignments[idx] = best_k
-                        sizes[j] -= 1
-                        sizes[best_k] += 1
-    
-    # --- 4. Monta resultado com TSP por equipe ---
+    # --- 2. Divisão e Balanceamento Exatos ---
     resultado = {}
+    total = len(dados_ordenados)
+    
+    tamanho_base = total // num_equipes
+    sobra = total % num_equipes
+    
+    idx_atual = 0
     for j in range(num_equipes):
-        membros = [dados_locais[i] for i in range(len(dados_locais)) if assignments[i] == j]
+        # Distribui a sobra 1 a 1 para as primeiras equipes
+        qtd = tamanho_base + (1 if j < sobra else 0)
+        membros = dados_ordenados[idx_atual : idx_atual + qtd]
+        idx_atual += qtd
+        
         if not membros:
             continue
-        
-        # Adiciona base no início
+            
+        # Adiciona base no início para o TSP
         if base:
             membros_com_base = [base.copy()] + membros
         else:
             membros_com_base = membros
         
-        # Otimiza rota interna da equipe
+        # Otimiza rota interna da equipe (Caixeiro Viajante)
         rota = organizar_rota_tsp(membros_com_base)
         
         # Fecha ciclo (retorno à base)
         if rota and base:
-            p_ret = rota[0].copy()
-            p_ret['nome'] += " (Retorno)"
-            rota.append(p_ret)
-        
+            p_retorno = base.copy()
+            p_retorno['nome'] += " (Retorno)"
+            rota.append(p_retorno)
+            
         resultado[f"Equipe {j+1}"] = rota
-    
+        
     return resultado
 
 # --- CLASSES AUXILIARES DE UI ---
@@ -2022,8 +1980,88 @@ class LocalizadorApp(QMainWindow):
             # Ordena por equipe e depois por ordem
             df_export = df_export.sort_values(by=[col_eq, col_exec])
             
+            # --- Filtrar colunas essenciais ---
+            # O usuário pediu apenas: Equipe, Ordem, OS, Bairro.
+            # Tenta encontrar a coluna de OS
+            col_os = next((c for c in df_export.columns if c.lower().strip() in ['os', 'o.s', 'ordem', 'ordem de serviço']), None)
+            
+            cols_to_keep = [col_eq, col_exec]
+            if col_os:
+                cols_to_keep.append(col_os)
+            cols_to_keep.append(self.col_endereco_atual)
+            
+            # Filtra o DataFrame apenas para as colunas selecionadas
+            df_export = df_export[cols_to_keep]
+            
             df_export.to_excel(fname, index=False)
-            QMessageBox.information(self, "Sucesso", f"Arquivo salvo com sucesso!\n{fname}")
+            
+            # --- ESTILIZAÇÃO DO EXCEL ---
+            import openpyxl
+            from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+            
+            wb = openpyxl.load_workbook(fname)
+            ws = wb.active
+            
+            header_fill = PatternFill(start_color="004aad", end_color="004aad", fill_type="solid")
+            header_font = Font(color="FFFFFF", bold=True)
+            border_thin = Border(left=Side(style='thin'), right=Side(style='thin'), 
+                                 top=Side(style='thin'), bottom=Side(style='thin'))
+            border_thick_top = Border(left=Side(style='thin'), right=Side(style='thin'), 
+                                      top=Side(style='medium', color="004aad"), bottom=Side(style='thin'))
+            
+            # Estilizar Header
+            for cell in ws[1]:
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                cell.border = border_thin
+                
+            # Ajustar a largura das colunas
+            for col in ws.columns:
+                max_length = 0
+                col_letter = col[0].column_letter
+                for cell in col:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                ws.column_dimensions[col_letter].width = min(max_length + 2, 60)
+            
+            # Paleta de cores suaves para cada equipe
+            cores_equipe = ["E3F2FD", "E8F5E9", "FFF3E0", "F3E5F5", "FFFDE7", "FCE4EC"]
+            equipe_atual = None
+            cor_idx = -1
+            
+            for row in range(2, ws.max_row + 1):
+                # Coluna 1 = Equipe Designada, Coluna 2 = Ordem de Execução
+                nome_eq = ws.cell(row=row, column=1).value
+                
+                # Se for uma linha sem equipe (não encontrada)
+                if not nome_eq or nome_eq == "":
+                    fill = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+                    borda = border_thin
+                else:
+                    if nome_eq != equipe_atual:
+                        equipe_atual = nome_eq
+                        cor_idx = (cor_idx + 1) % len(cores_equipe)
+                        borda = border_thick_top
+                    else:
+                        borda = border_thin
+                        
+                    fill = PatternFill(start_color=cores_equipe[cor_idx], end_color=cores_equipe[cor_idx], fill_type="solid")
+                
+                for col in range(1, ws.max_column + 1):
+                    c = ws.cell(row=row, column=col)
+                    c.fill = fill
+                    c.border = borda
+                    if col <= 2: # Centraliza a Equipe e a Ordem
+                        c.alignment = Alignment(horizontal="center", vertical="center")
+
+            # Salva o arquivo estilizado
+            wb.save(fname)
+            
+            QMessageBox.information(self, "Sucesso", f"Arquivo salvo e formatado com sucesso!\n{fname}")
 
         except Exception as e:
             QMessageBox.critical(self, "Erro", f"Erro ao exportar Excel: {e}")
