@@ -1980,14 +1980,22 @@ class LocalizadorApp(QMainWindow):
             # Ordena por equipe e depois por ordem
             df_export = df_export.sort_values(by=[col_eq, col_exec])
             
+            # --- Renumerar sequencialmente por equipe (1, 2, 3, 4...) ---
+            # Evita números repetidos quando o mesmo bairro aparece mais de uma vez
+            df_export[col_exec] = df_export.groupby(col_eq).cumcount() + 1
+            
             # --- Filtrar colunas essenciais ---
-            # O usuário pediu apenas: Equipe, Ordem, OS, Bairro.
             # Tenta encontrar a coluna de OS
             col_os = next((c for c in df_export.columns if c.lower().strip() in ['os', 'o.s', 'ordem', 'ordem de serviço']), None)
+            
+            # Tenta encontrar a coluna de Endereço
+            col_endereco = next((c for c in df_export.columns if c.lower().strip() in ['endereço', 'endereco', 'endereço da os', 'endereco da os', 'logradouro', 'rua']), None)
             
             cols_to_keep = [col_eq, col_exec]
             if col_os:
                 cols_to_keep.append(col_os)
+            if col_endereco and col_endereco != self.col_endereco_atual:
+                cols_to_keep.append(col_endereco)
             cols_to_keep.append(self.col_endereco_atual)
             
             # Filtra o DataFrame apenas para as colunas selecionadas
